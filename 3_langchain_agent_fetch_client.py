@@ -39,7 +39,9 @@ async def main() -> None:
             agent = create_agent(model, tools)
 
             result = await agent.ainvoke(
-                {"messages": [{"role": "user", "content": question}]} #Why don't we format the prompt here? Because it's very simple in this case?
+                # No PromptTemplate needed -- that earns its keep with variables to
+                # interpolate or multi-step chains. This is one fixed literal string.
+                {"messages": [{"role": "user", "content": question}]}
             )
 
             print("\nFull message history (each tool call + result is one message):")

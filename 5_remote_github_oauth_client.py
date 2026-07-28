@@ -1,7 +1,9 @@
-'''
-This is a public client since it stores everything on its own.
-
-'''
+"""
+This is a public client: it can't keep a secret confidential (anyone could
+read CLIENT_SECRET out of this file), so PKCE -- not the secret -- is what
+actually secures the flow. Contrast with 6_github_oauth_backend_server.py,
+a confidential client where the secret genuinely never leaves the server.
+"""
 
 import asyncio
 import os
@@ -29,7 +31,7 @@ REDIRECT_PORT = 3030
 REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
 
 CLIENT_ID = os.environ["GITHUB_OAUTH_CLIENT_ID"]
-CLIENT_SECRET = os.environ["GITHUB_OAUTH_CLIENT_SECRET"] # The secret is just theater since it's store in the user's side.
+CLIENT_SECRET = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]  # not truly confidential here (public client) -- PKCE is the real protection, not this
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
@@ -69,7 +71,10 @@ class InMemoryTokenStorage(TokenStorage):
             response_types=["code"],
         )
 
-    async def get_tokens(self) -> OAuthToken | None: # async?
+    async def get_tokens(self) -> OAuthToken | None:
+        # async because TokenStorage is a generic Protocol -- other backends
+        # (disk, keychain, a secrets manager) would need real await here.
+        # This in-memory one doesn't, but must still match the signature.
         return self._tokens
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
@@ -110,12 +115,20 @@ async def redirect_handler(auth_url: str) -> None:
 async def callback_handler() -> tuple[str, str | None]:
     """Spins up a throwaway local HTTP server just long enough to catch the
     redirect GitHub sends back after you click Authorize."""
-    server = HTTPServer(("localhost", REDIRECT_PORT), _CallbackHandler) #Why do we need a server? To receive the auth result / the access token from github
+    # Why a server: GitHub can only hand the result back via a browser redirect
+    # (a GUI window can't "return a value" any other way), and it's the
+    # authorization CODE we catch here, not the access token itself -- the
+    # real token comes later via a separate direct server-to-server exchange.
+    server = HTTPServer(("localhost", REDIRECT_PORT), _CallbackHandler)
     server.auth_code = None  # type: ignore[attr-defined]
     server.auth_state = None  # type: ignore[attr-defined]
     server.auth_error = None  # type: ignore[attr-defined]
 
-    thread = threading.Thread(target=server.serve_forever, daemon=True) #Do I have to create a local server in the front if the client doesn't have a backend server?
+    # Yes, some kind of local server is required for this specific grant type
+    # (authorization_code) since the redirect needs somewhere to land. The
+    # alternative is the device-code flow (what `gh auth login` uses) --
+    # no server at all, just a code you type into a browser page yourself.
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(f"Listening for GitHub's OAuth callback on {REDIRECT_URI} ...")
 

@@ -19,8 +19,8 @@ CLIENT_SECRET = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
 # Reusing the exact redirect URI already registered on the OAuth App from
 # 5_remote_github_oauth_client.py -- classic GitHub OAuth Apps only support one
 # callback URL, so this backend just takes over that same slot.
-REDIRECT_URI = "http://localhost:3030/callback" # Do we need to send this to the client?
-GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/" #Who connects to the MCP server?
+REDIRECT_URI = "http://localhost:3030/callback"  # server-side only -- the client never sees or needs this
+GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/"  # only this backend connects here, inside whoami() -- the client never touches GitHub at all
 
 app = FastAPI()
 
@@ -32,47 +32,67 @@ PENDING_STATES: dict[str, str] = {}
 SESSIONS: dict[str, str] = {}
 
 
-#It's based on: We trust the auth server while we don't trust the client.
-#Why don't we have pkce in 5_remote_github_client?
+# PKCE exists because the auth server can't tell, from the code alone,
+# whether whoever redeems it is really the same party that started the
+# flow -- it binds the code to a secret (verifier) only we ever held.
+# 5_remote_github_oauth_client.py DOES have PKCE too -- it's just generated
+# inside OAuthClientProvider (the SDK), invisible in that file. Here we do
+# raw OAuth by hand, so it's code we write and can see instead.
 def _generate_pkce_pair() -> tuple[str, str]:
-    verifier = secrets.token_urlsafe(64)[:128] #What does it do? a random string with 128 chars?
+    # token_urlsafe(64) actually yields ~86 chars, not 128 -- the [:128] slice
+    # never truncates anything (86 < 128), just defensive since PKCE requires 43-128.
+    verifier = secrets.token_urlsafe(64)[:128]
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     return verifier, challenge
 
-#Do we use the same token for github authentication, mcp server authentication and our own app authentication?
-@app.get("/login") # GET method? I think it should be POST.
+# Two tokens now, not one: the real GitHub token (used for BOTH GitHub API
+# auth and MCP server auth, same reasoning as before) lives only in this
+# backend; session_token below is a totally separate, unrelated credential
+# for client<->backend auth, with zero connection to GitHub's OAuth system.
+@app.get("/login")  # must be GET -- OAuth's authorize endpoint is designed to be navigated to via browser redirect, which only works with GET
 def login() -> RedirectResponse:
     """The client is sent here to start a GitHub login. Notice it needs no
     query params, no client_id -- the client doesn't know GitHub is even
     involved."""
-    state = secrets.token_urlsafe(16) #Isn't it an enum? Why do we call it state? It's not used as a state.
+    # Not an enum -- "state" is RFC 6749 terminology for a CSRF-protection
+    # nonce, not a status value. It proves this callback really came from a
+    # login WE started, not an attacker tricking your browser into hitting
+    # our /callback with their own code.
+    state = secrets.token_urlsafe(16)
     verifier, challenge = _generate_pkce_pair()
-    PENDING_STATES[state] = verifier # state is the key to verifier actually. It's how we get verifier later.
+    PENDING_STATES[state] = verifier  # yes -- state is literally the dict key we use to look verifier back up later
 
     params = {
         "response_type": "code",
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "state": state,
-        "code_challenge": challenge, #We return chanllenge to the user's browser while keeping verifier in the backend.
-                                    #Do we send the challenge to github? Yes.
-        "code_challenge_method": "S256", #Do we send the challenge method to github? Theriatically, we can send this through getting access_token method.
+        # challenge (a hash) goes to GitHub now, in this URL; verifier (the
+        # actual secret) stays here and only gets sent later, at /callback.
+        "code_challenge": challenge,
+        # Must be declared upfront, not deferred to the token step: GitHub
+        # stores (challenge, method) tied to the code the moment it's issued,
+        # so it needs to already know which hash function to check against.
+        "code_challenge_method": "S256",
         "scope": "read:user",
     }
-    return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}") # We return this to the browser rather than the client.
+    return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")  # goes to the browser GitHub redirected -- the client process never sees this URL
 
 
-@app.get("/callback") #POST?
+@app.get("/callback")  # must be GET -- same reason as /login, GitHub's redirect always arrives as a GET
 async def callback(code: str, state: str) -> HTMLResponse:
     """GitHub redirects here after you click Authorize. Unlike the local
     throwaway server in 5_remote_github_oauth_client.py, this is just a normal
     route on a server that's always running."""
-    verifier = PENDING_STATES.pop(state, None) #We use it only for once?
+    verifier = PENDING_STATES.pop(state, None)  # yes, exactly once -- .pop() removes it, so replaying this URL a 2nd time fails (anti-replay)
     if verifier is None:
         raise HTTPException(400, "Unknown or expired state")
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post( # Why do we use async http request here and await? Because there may be multiple "callback" requests occupying the same thread. If we don't use async and await, current thread will be blocked by one of the requsts and we can't handle other reqs at the same time.
+        # Correct instinct: async here means one slow call to github.com
+        # doesn't block this whole server from handling any other request
+        # concurrently (other users logging in, other endpoints, etc.).
+        resp = await client.post(
             "https://github.com/login/oauth/access_token",
             data={
                 "client_id": CLIENT_ID,
@@ -88,14 +108,22 @@ async def callback(code: str, state: str) -> HTMLResponse:
         raise HTTPException(400, f"GitHub token exchange failed: {token_data}")
 
     github_token = token_data["access_token"]
-    session_token = secrets.token_urlsafe(32) #A random string? 
-    SESSIONS[session_token] = github_token #session_token is actually the key for github token? Why do we call it token? It's not used as a token.
+    session_token = secrets.token_urlsafe(32)  # yes, a cryptographically random string
+    # It IS a real token: the client presents it as `Authorization: Bearer
+    # <session_token>` to prove its identity, same role any bearer token
+    # plays. Using it as a dict key too is just our lookup mechanism -- that
+    # doesn't disqualify it from being a token, same as a session cookie's
+    # value often doubling as a DB row's primary key.
+    SESSIONS[session_token] = github_token
 
     # Same-machine demo hand-off: write our session token where the client
     # script can pick it up. A real app would set a cookie or return this
-    # from a proper login API instead.
+    # from a proper login API instead. NOTE: this file is NOT "the database"
+    # -- SESSIONS (above) is; this file is just a one-time channel to get
+    # one session_token from this process to the separate client process,
+    # closer to "simulating a cookie landing in a browser."
     with open(".backend_session", "w") as f:
-        f.write(session_token) #It simulates a database to store access tokens here
+        f.write(session_token)
 
     return HTMLResponse(
         "<html><body><h1>Logged in!</h1>"

@@ -7,7 +7,7 @@ from mcp.client.stdio import stdio_client
 # child process and talks to it over stdio -- the standard transport for
 # local MCP servers.
 server_params = StdioServerParameters(
-    command="uvx", # uv vs uvx?
+    command="uvx",  # uv installs deps into *our* project; uvx runs someone else's package in a throwaway env instead
     args=["mcp-server-fetch"],
 )
 

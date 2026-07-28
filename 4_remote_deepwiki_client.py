@@ -8,10 +8,13 @@ from mcp.client.streamable_http import streamablehttp_client
 URL = "https://mcp.deepwiki.com/mcp"
 
 
-async def main() -> None: #Why do we need async here?
-    async with streamablehttp_client(URL) as (read, write, _): #with keyword: safely close streamablehttp_client after the inner code? # as (read, write, _) defines the returned values
+async def main() -> None:  # async because everything below is I/O (network), not CPU work -- await lets us wait without blocking the whole program
+    # async with = await ctx.__aenter__()/__aexit__() under the hood: opens the
+    # connection, guarantees cleanup even on exception. (read, write, _) unpacks
+    # the three things streamablehttp_client hands back; we don't need the third.
+    async with streamablehttp_client(URL) as (read, write, _):
         async with ClientSession(read, write) as session:
-            await session.initialize() #synchronous
+            await session.initialize()  # async, not synchronous -- but await does force this line to finish before list_tools() runs
 
             tools = await session.list_tools()
             print("Tools exposed by the remote DeepWiki server:")

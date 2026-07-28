@@ -1,7 +1,7 @@
 [project]
-name = "phase1-consumer"
+name = "learn-to-call-mcp-servers"
 version = "0.1.0"
-description = "Add your description here"
+description = "Hands-on MCP learning scripts: local/remote servers, agent loops, OAuth"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

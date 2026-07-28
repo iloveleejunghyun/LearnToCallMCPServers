@@ -17,7 +17,7 @@ load_dotenv()
 CLIENT_ID = os.environ["GITHUB_OAUTH_CLIENT_ID"]
 CLIENT_SECRET = os.environ["GITHUB_OAUTH_CLIENT_SECRET"]
 # Reusing the exact redirect URI already registered on the OAuth App from
-# 5_remote_github_client.py -- classic GitHub OAuth Apps only support one
+# 5_remote_github_oauth_client.py -- classic GitHub OAuth Apps only support one
 # callback URL, so this backend just takes over that same slot.
 REDIRECT_URI = "http://localhost:3030/callback" # Do we need to send this to the client?
 GITHUB_MCP_URL = "https://api.githubcopilot.com/mcp/" #Who connects to the MCP server?
@@ -65,7 +65,7 @@ def login() -> RedirectResponse:
 @app.get("/callback") #POST?
 async def callback(code: str, state: str) -> HTMLResponse:
     """GitHub redirects here after you click Authorize. Unlike the local
-    throwaway server in 5_remote_github_client.py, this is just a normal
+    throwaway server in 5_remote_github_oauth_client.py, this is just a normal
     route on a server that's always running."""
     verifier = PENDING_STATES.pop(state, None) #We use it only for once?
     if verifier is None:
